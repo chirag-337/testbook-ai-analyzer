@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Testbook AI Analyzer</title>
+  <style>
+    body { width: 330px; margin: 0; padding: 18px; font: 14px/1.5 system-ui, sans-serif; color: #172033; }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    p { margin: 0 0 14px; color: #596579; }
+    button { width: 100%; padding: 10px 12px; margin-top: 8px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    #scan { background: #172033; color: white; }
+    #export, #copy { background: #eef2f7; color: #172033; }
+    #status { margin-top: 14px; padding: 10px; background: #f7f8fa; border-radius: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Testbook AI Analyzer</h1>
+  <p>Extract the current mock-test page locally.</p>
+  <button id="scan">Scan page</button>
+  <button id="export" disabled>Export JSON</button>
+  <button id="copy" disabled>Copy AI analysis prompt</button>
+  <div id="status">Ready.</div>
+  <script src="popup.js"></script>
+</body>
+</html>
