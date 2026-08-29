@@ -27,7 +27,7 @@
 
   function extractQuestionNumber(container, index) {
     const label = clean(container.querySelector('[aria-label*="Question" i]')?.getAttribute('aria-label'));
-    const text = textOf(container).slice(0, 150);
+    const text = textOf(container).slice(0, 250);
     const match = `${label} ${text}`.match(/(?:question\s*)?(\d{1,3})\s*(?:[.:)\-]|of\b)/i);
     return match ? Number(match[1]) : index + 1;
   }
@@ -36,37 +36,75 @@
     const candidates = [
       container.querySelector('[class*="section" i]'),
       container.closest('[class*="section" i]')?.querySelector('[class*="title" i]')
-    ];
-    return clean(candidates.find(isVisible) ? textOf(candidates.find(isVisible)) : '');
+    ].filter(Boolean);
+    const visible = candidates.find(isVisible);
+    return visible ? textOf(visible) : '';
+  }
+
+  function looksLikeQuestionText(text) {
+    return /^(?:Q(?:uestion)?\s*)?\d{1,3}\s*[.:)\-]/i.test(text) ||
+      /^(?:question\s*)?\d{1,3}\b/i.test(text);
   }
 
   function findQuestionContainers() {
-    const candidates = Array.from(document.querySelectorAll(
-      '[class*="question" i], [data-question], [data-testid*="question" i], article'
-    )).filter(isVisible);
+    const selector = [
+      '[class*="question" i]',
+      '[class*="question-card" i]',
+      '[class*="question-container" i]',
+      '[class*="question-panel" i]',
+      '[class*="test-question" i]',
+      '[class*="question-wrapper" i]',
+      '[data-question]',
+      '[data-question-id]',
+      '[data-testid*="question" i]',
+      '[data-cy*="question" i]',
+      '[aria-label*="question" i]',
+      'article'
+    ].join(',');
 
+    const candidates = Array.from(document.querySelectorAll(selector)).filter(isVisible);
     const unique = [];
     const seen = new Set();
+
     for (const el of candidates) {
       const text = textOf(el);
-      if (text.length < 20 || text.length > 5000) continue;
+      if (text.length < 20 || text.length > 8000) continue;
       if (/^(question|answer|option)$/i.test(text)) continue;
-      const key = text.slice(0, 300);
+
+      // Prefer the smallest useful container so nested question elements don't duplicate the same question.
+      const hasQuestionAncestor = Array.from(el.parentElement ? el.parentElement.querySelectorAll('[class*="question" i],[data-question],[data-question-id]') : [])
+        .some(parent => parent !== el && parent.contains(el) && textOf(parent).length > text.length * 1.5);
+      if (hasQuestionAncestor) continue;
+
+      const key = text.slice(0, 500);
       if (!seen.has(key)) {
         seen.add(key);
         unique.push(el);
       }
     }
 
-    return unique.filter(el => {
-      const options = el.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="option"], label');
-      return options.length >= 2;
-    });
+    // Fallback: locate visible blocks whose first line looks like Q1/Q2/etc.
+    if (!unique.length) {
+      const blocks = Array.from(document.querySelectorAll('div, li, article, section')).filter(isVisible);
+      for (const el of blocks) {
+        const text = textOf(el);
+        if (text.length < 30 || text.length > 5000 || !looksLikeQuestionText(text)) continue;
+        const childMatch = Array.from(el.children).some(child => looksLikeQuestionText(textOf(child)));
+        if (childMatch) continue;
+        const key = text.slice(0, 500);
+        if (!seen.has(key)) {
+          seen.add(key);
+          unique.push(el);
+        }
+      }
+    }
+
+    return unique;
   }
 
   function extractOptions(container) {
     const raw = Array.from(container.querySelectorAll(
-      'label, [role="radio"], [role="option"], input[type="radio"], input[type="checkbox"]'
+      'label, [role="radio"], [role="option"], [class*="option" i], [class*="answer" i], input[type="radio"], input[type="checkbox"]'
     )).filter(isVisible);
 
     const options = [];
@@ -74,7 +112,7 @@
     for (const el of raw) {
       const owner = el.closest('label') || el;
       const text = clean(owner.innerText || owner.getAttribute('aria-label') || el.value || '');
-      if (!text || text.length > 300 || seen.has(text)) continue;
+      if (!text || text.length > 500 || seen.has(text)) continue;
       seen.add(text);
       const state = optionState(el);
       options.push({ text, selected: state.selected, correct: state.correct });
