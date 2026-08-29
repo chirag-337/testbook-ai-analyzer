@@ -53,7 +53,7 @@ function nextButtonExists() {
     .some(el => visible(el) && clean(el.innerText || el.textContent).toLowerCase() === 'next');
 }
 
-async function waitForQuestionChange(oldNumber, timeout = 6000) {
+async function waitForQuestionChange(oldNumber, timeout = 7000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
     const n = currentQuestionNumber();
@@ -68,6 +68,89 @@ async function ensureSolution() {
   await clickByText('View Solution', 5000);
   const started = Date.now();
   while (!solutionVisible() && Date.now() - started < 6000) await wait(150);
+}
+
+// Testbook's right-side question navigator contains one numeric item per
+// question in the CURRENT section. This lets us detect section boundaries
+// without hard-coding 25 questions per section.
+function currentSectionQuestionCount() {
+  const sectionHeading = [...document.querySelectorAll('body *')]
+    .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
+
+  if (sectionHeading) {
+    let root = sectionHeading.parentElement;
+    for (let i = 0; i < 6 && root; i++, root = root.parentElement) {
+      const nums = [...root.querySelectorAll('button, a, [role="button"], div, span')]
+        .filter(visible)
+        .map(el => clean(el.innerText || el.textContent))
+        .filter(t => /^\d{1,3}$/.test(t));
+      const unique = [...new Set(nums.map(Number))];
+      if (unique.length >= 2 && unique.length <= 100) return Math.max(...unique);
+    }
+  }
+
+  // Fallback: count visible numeric controls on the right side.
+  const nums = [...document.querySelectorAll('button, a, [role="button"], div, span')]
+    .filter(visible)
+    .filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.left > window.innerWidth * 0.65 && /^\d{1,3}$/.test(clean(el.innerText || el.textContent));
+    })
+    .map(el => Number(clean(el.innerText || el.textContent)));
+  const unique = [...new Set(nums)];
+  return unique.length >= 2 ? Math.max(...unique) : null;
+}
+
+function getSectionTabs() {
+  const candidates = [...document.querySelectorAll('button, a, [role="button"], div, span')]
+    .filter(visible)
+    .map(el => ({ el, text: clean(el.innerText || el.textContent), r: el.getBoundingClientRect() }))
+    .filter(x => x.text && x.text.length >= 3 && x.text.length <= 45)
+    .filter(x => x.r.top >= 120 && x.r.top <= 220 && x.r.left >= 70 && x.r.left < window.innerWidth * 0.65)
+    .filter(x => !/^(SECTIONS|English|Hindi|Save|Report|Analytics|Filter)$/i.test(x.text));
+
+  // Prefer the largest clickable element for each visible tab label, then
+  // sort left-to-right. Nested spans/divs otherwise create duplicates.
+  const byText = new Map();
+  for (const x of candidates) {
+    const old = byText.get(x.text);
+    if (!old || x.r.width * x.r.height > old.r.width * old.r.height) byText.set(x.text, x);
+  }
+
+  return [...byText.values()]
+    .sort((a, b) => a.r.left - b.r.left)
+    .map(x => x.el)
+    .filter(el => el.parentElement);
+}
+
+async function moveToNextSection(currentNumber) {
+  const tabs = getSectionTabs();
+  if (tabs.length < 2) throw new Error(`Reached section end at question ${currentNumber}, but could not find the section tabs.`);
+
+  const currentText = clean(document.querySelector('[class*="active"]')?.innerText || '');
+  let currentIndex = tabs.findIndex(tab => /active|selected/i.test(String(tab.className || '')));
+
+  // If the active class is on a child, infer the current tab from the
+  // question section heading instead.
+  if (currentIndex < 0) {
+    const heading = [...document.querySelectorAll('body *')]
+      .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
+    const sectionName = heading ? clean(heading.innerText || heading.textContent).replace(/^SECTION\s*:\s*/i, '') : '';
+    currentIndex = tabs.findIndex(tab => sectionName && clean(tab.innerText || tab.textContent).toLowerCase().includes(sectionName.toLowerCase()));
+  }
+
+  if (currentIndex < 0) currentIndex = 0;
+  const nextTab = tabs[currentIndex + 1];
+  if (!nextTab) return false;
+
+  nextTab.click();
+  const started = Date.now();
+  while (Date.now() - started < 7000) {
+    await wait(150);
+    const n = currentQuestionNumber();
+    if (n && n > currentNumber) return true;
+  }
+  return false;
 }
 
 async function autoExtract(sendProgress) {
@@ -94,6 +177,15 @@ async function autoExtract(sendProgress) {
       }
 
       if (qn >= 100) break;
+
+      const sectionCount = currentSectionQuestionCount();
+      if (sectionCount && qn === sectionCount) {
+        const moved = await moveToNextSection(qn);
+        if (!moved) throw new Error(`Reached question ${qn}, but could not move to the next section.`);
+        await wait(350);
+        continue;
+      }
+
       if (!nextButtonExists()) throw new Error(`Stopped at question ${qn}: Next button not found.`);
       await clickByText('Next', 5000);
       await waitForQuestionChange(qn, 7000);
