@@ -8,42 +8,35 @@
     return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0' && r.width > 0 && r.height > 0;
   };
 
-  // Confirmed from Testbook's current DOM in DevTools.
   const OPTION_SELECTOR = 'li[ng-repeat*="option in getOptions"]';
+  const hasClassToken = (el, token) => String(el?.className || '').split(/\s+/).some(c => c === token);
 
   function getOptions(card) {
     return [...card.querySelectorAll(OPTION_SELECTOR)]
       .filter(visible)
-      .map((li) => {
+      .map((li, index) => {
         const valueEl = li.querySelector('.ans-view-box, [ng-bind-html*="parseDesc"]');
         const text = textOf(valueEl || li)
           .replace(/Your first attempt/gi, '')
           .replace(/\d+% answered correctly/gi, '')
           .trim();
-        const cls = String(li.className || '').toLowerCase();
-        return {
-          text,
-          selected: /first-attempt-option/.test(cls),
-          correct: /correct-option/.test(cls) && !/incorrect-option/.test(cls),
-          incorrect: /incorrect-option/.test(cls),
-          rawClass: String(li.className || '')
-        };
+        const selected = hasClassToken(li, 'first-attempt-option') ||
+          li.getAttribute('aria-selected') === 'true' ||
+          !!li.querySelector('[aria-selected="true"]');
+        const correct = hasClassToken(li, 'correct-option') && !hasClassToken(li, 'incorrect-option');
+        const incorrect = hasClassToken(li, 'incorrect-option');
+        return { number: index + 1, text, selected, correct, incorrect, rawClass: String(li.className || '') };
       })
-      .filter((o) => o.text);
+      .filter(o => o.text);
   }
 
   function findQuestionCards() {
     const result = [];
     const seen = new Set();
-
     for (const li of document.querySelectorAll(OPTION_SELECTOR)) {
       if (!visible(li)) continue;
-
       let node = li.parentElement;
       let best = null;
-
-      // Walk upward and prefer the smallest visible ancestor containing
-      // exactly 4 option <li>s and question metadata.
       for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
         if (!visible(node)) continue;
         const opts = [...node.querySelectorAll(OPTION_SELECTOR)].filter(visible);
@@ -55,7 +48,6 @@
           }
         }
       }
-
       if (best && !seen.has(best)) {
         seen.add(best);
         result.push(best);
@@ -75,30 +67,37 @@
     const marksMatch = raw.match(/Marks\s*([\d.]+)/i);
     const pctMatch = raw.match(/(\d+)%\s*answered correctly/i);
 
-    // Testbook exposes the official answer in the solution text as
-    // "correct answer is \"Option N\"". This is safer than guessing from color.
     const solutionMatch = raw.match(/correct answer is\s*["']?Option\s*(\d+)/i);
-    const classCorrectIndex = options.findIndex((o) => o.correct);
-    const correctOption = classCorrectIndex >= 0
-      ? classCorrectIndex + 1
-      : (solutionMatch ? Number(solutionMatch[1]) : null);
+    const classCorrectIndex = options.findIndex(o => o.correct);
+    const correctOption = classCorrectIndex >= 0 ? classCorrectIndex + 1 :
+      (solutionMatch ? Number(solutionMatch[1]) : null);
 
-    const selectedIndex = options.findIndex((o) => o.selected);
+    const selectedIndex = options.findIndex(o => o.selected);
+    const selectedOption = selectedIndex >= 0 ? selectedIndex + 1 : null;
 
     let result = null;
-    if (/\bCorrect\b/i.test(raw) && !/\bIncorrect\b/i.test(raw)) result = 'correct';
-    else if (/\bIncorrect\b/i.test(raw)) result = 'incorrect';
-    else if (/\bSkipped\b/i.test(raw)) result = 'skipped';
-    else if (selectedIndex >= 0 && correctOption) {
-      result = selectedIndex + 1 === correctOption ? 'correct' : 'incorrect';
+    let resultSource = null;
+    if (selectedOption !== null && correctOption !== null) {
+      result = selectedOption === correctOption ? 'correct' : 'incorrect';
+      resultSource = 'selected-vs-correct-option';
+    } else {
+      // Fallback ONLY to a dedicated status token at the start of the card,
+      // not any arbitrary occurrence of the word "Correct" in the question.
+      const statusMatch = raw.match(/^\s*(Correct|IncorrectMarks\s*-?\d*\.?\d*|Incorrect|Skipped)\b/i);
+      if (statusMatch) {
+        const status = statusMatch[1].toLowerCase();
+        if (status === 'skipped') result = 'skipped';
+        else if (status.startsWith('incorrect')) result = 'incorrect';
+        else if (status === 'correct') result = 'correct';
+        resultSource = 'explicit-card-status-fallback';
+      }
     }
 
-    // Remove page chrome and the four option strings from the question text.
     let question = raw;
     if (numMatch) question = question.replace(numMatch[0], '');
     question = question
-      .replace(/\bCorrect\b|\bIncorrect\b|\bSkipped\b/gi, '')
-      .replace(/You:\s*\d{1,2}:\d{2}\s*Avg:\s*\d{1,2}:\d{2}/i, '')
+      .replace(/^\s*(Correct|IncorrectMarks\s*-?\d*\.?\d*|Incorrect|Skipped)\b/i, '')
+      .replace(/Your:\s*\d{1,2}:\d{2}\s*Avg:\s*\d{1,2}:\d{2}/i, '')
       .replace(/Marks\s*[\d.]+/i, '')
       .replace(/\d+%\s*answered correctly/i, '')
       .replace(/Re-attempt mode:\s*ON/gi, '')
@@ -114,16 +113,14 @@
       questionNumber: numMatch ? Number(numMatch[1]) : index + 1,
       section: null,
       question,
-      options: options.map((o) => ({
-        text: o.text,
-        selected: o.selected,
-        correct: o.correct || false
-      })),
-      selectedAnswer: selectedIndex >= 0 ? options[selectedIndex].text : null,
-      selectedOption: selectedIndex >= 0 ? selectedIndex + 1 : null,
+      options: options.map(o => ({ text: o.text, selected: o.selected, correct: o.correct || false })),
+      selectedAnswer: selectedOption ? options[selectedOption - 1].text : null,
+      selectedOption,
       correctAnswer: correctOption && options[correctOption - 1] ? options[correctOption - 1].text : null,
       correctOption,
       result,
+      resultSource,
+      dataWarning: selectedOption === null || correctOption === null || resultSource === 'explicit-card-status-fallback',
       timeSeconds: timeMatch ? Number(timeMatch[1]) * 60 + Number(timeMatch[2]) : null,
       averageTimeSeconds: avgMatch ? Number(avgMatch[1]) * 60 + Number(avgMatch[2]) : null,
       marks: marksMatch ? Number(marksMatch[1]) : null,
@@ -132,12 +129,32 @@
     };
   }
 
+  function validate(records) {
+    const total = records.length;
+    const correct = records.filter(q => q.result === 'correct').length;
+    const incorrect = records.filter(q => q.result === 'incorrect').length;
+    const skipped = records.filter(q => q.result === 'skipped').length;
+    const unknown = records.filter(q => !q.result).length;
+    const selectedMissing = records.filter(q => q.selectedOption === null).length;
+    const correctMissing = records.filter(q => q.correctOption === null).length;
+    return {
+      totalQuestions: total,
+      correct,
+      incorrect,
+      skipped,
+      unknown,
+      selectedMissing,
+      correctMissing,
+      resultCountValid: total === correct + incorrect + skipped + unknown,
+      selectedAnswerCaptureWorking: selectedMissing === 0,
+      correctAnswerCaptureWorking: correctMissing === 0,
+      validated: total > 0 && unknown === 0 && correctMissing === 0
+    };
+  }
+
   function extract() {
     const cards = findQuestionCards();
     const questions = cards.map(parseQuestion).filter(Boolean);
-
-    // Testbook may render duplicate wrappers for the same question. Keep the
-    // first complete record for each question number.
     const unique = [];
     const seenNumbers = new Set();
     for (const q of questions) {
@@ -145,12 +162,12 @@
       seenNumbers.add(q.questionNumber);
       unique.push(q);
     }
-
     return {
       extractedAt: new Date().toISOString(),
       pageTitle: document.title,
       url: location.href,
       count: unique.length,
+      validation: validate(unique),
       questions: unique
     };
   }
