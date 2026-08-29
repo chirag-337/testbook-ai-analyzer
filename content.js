@@ -72,10 +72,6 @@ async function waitForQuestionChange(oldNumber, timeout = 7000) {
   return currentQuestionNumber();
 }
 
-// Testbook can auto-open a solution. Never fail the entire scan just because
-// the "View Solution" button is absent; if it is already open, extraction can
-// proceed. If the button is absent and no solution is visible, wait briefly
-// and then continue rather than forcing manual intervention.
 async function ensureSolution() {
   if (solutionVisible()) return true;
 
@@ -83,8 +79,7 @@ async function ensureSolution() {
     try {
       await clickByText('View Solution', 2500);
     } catch (_) {
-      // The DOM may change between detection and click. Treat this as a
-      // non-fatal condition and re-check below.
+      // Testbook may rerender between detection and click.
     }
 
     const started = Date.now();
@@ -92,38 +87,10 @@ async function ensureSolution() {
     return solutionVisible();
   }
 
-  // No button means Testbook may already have opened/loaded the solution.
-  // Give Angular a moment to finish rendering it, then continue regardless.
+  // Testbook can automatically open the solution. Never make this fatal.
   const started = Date.now();
   while (!solutionVisible() && Date.now() - started < 2500) await wait(150);
   return solutionVisible();
-}
-
-function currentSectionQuestionCount() {
-  const sectionHeading = [...document.querySelectorAll('body *')]
-    .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
-
-  if (sectionHeading) {
-    let root = sectionHeading.parentElement;
-    for (let i = 0; i < 6 && root; i++, root = root.parentElement) {
-      const nums = [...root.querySelectorAll('button, a, [role="button"], div, span')]
-        .filter(visible)
-        .map(el => clean(el.innerText || el.textContent))
-        .filter(t => /^\d{1,3}$/.test(t));
-      const unique = [...new Set(nums.map(Number))];
-      if (unique.length >= 2 && unique.length <= 100) return Math.max(...unique);
-    }
-  }
-
-  const nums = [...document.querySelectorAll('button, a, [role="button"], div, span')]
-    .filter(visible)
-    .filter(el => {
-      const r = el.getBoundingClientRect();
-      return r.left > window.innerWidth * 0.65 && /^\d{1,3}$/.test(clean(el.innerText || el.textContent));
-    })
-    .map(el => Number(clean(el.innerText || el.textContent)));
-  const unique = [...new Set(nums)];
-  return unique.length >= 2 ? Math.max(...unique) : null;
 }
 
 function getSectionTabs() {
@@ -146,29 +113,42 @@ function getSectionTabs() {
     .filter(el => el.parentElement);
 }
 
+function currentSectionName() {
+  const heading = [...document.querySelectorAll('body *')]
+    .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
+  return heading ? clean(heading.innerText || heading.textContent).replace(/^SECTION\s*:\s*/i, '') : '';
+}
+
 async function moveToNextSection(currentNumber) {
   const tabs = getSectionTabs();
   if (tabs.length < 2) throw new Error(`Reached section end at question ${currentNumber}, but could not find the section tabs.`);
 
-  let currentIndex = tabs.findIndex(tab => /active|selected/i.test(String(tab.className || '')));
+  const sectionName = currentSectionName();
+  let currentIndex = -1;
+
+  if (sectionName) {
+    currentIndex = tabs.findIndex(tab =>
+      clean(tab.innerText || tab.textContent).toLowerCase().includes(sectionName.toLowerCase())
+    );
+  }
 
   if (currentIndex < 0) {
-    const heading = [...document.querySelectorAll('body *')]
-      .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
-    const sectionName = heading ? clean(heading.innerText || heading.textContent).replace(/^SECTION\s*:\s*/i, '') : '';
-    currentIndex = tabs.findIndex(tab => sectionName && clean(tab.innerText || tab.textContent).toLowerCase().includes(sectionName.toLowerCase()));
+    currentIndex = tabs.findIndex(tab => /active|selected/i.test(String(tab.className || '')));
   }
 
   if (currentIndex < 0) currentIndex = 0;
   const nextTab = tabs[currentIndex + 1];
   if (!nextTab) return false;
 
+  const oldSection = sectionName.toLowerCase();
   nextTab.click();
+
   const started = Date.now();
-  while (Date.now() - started < 7000) {
+  while (Date.now() - started < 8000) {
     await wait(150);
+    const newSection = currentSectionName().toLowerCase();
     const n = currentQuestionNumber();
-    if (n && n > currentNumber) return true;
+    if ((newSection && newSection !== oldSection) || (n && n > currentNumber)) return true;
   }
   return false;
 }
@@ -198,18 +178,30 @@ async function autoExtract(sendProgress) {
 
       if (qn >= 100) break;
 
-      const sectionCount = currentSectionQuestionCount();
-      if (sectionCount && qn === sectionCount) {
+      // Do NOT infer section boundaries from the visible question grid.
+      // Testbook can render only part of the grid, and that caused false
+      // section-end detections (e.g. stopping at Q22 in a 25-question section).
+      // Instead, click Next normally and detect a section transition only if
+      // Testbook fails to advance or wraps to a lower question number.
+      if (!nextButtonExists()) {
         const moved = await moveToNextSection(qn);
-        if (!moved) throw new Error(`Reached question ${qn}, but could not move to the next section.`);
+        if (!moved) throw new Error(`Stopped at question ${qn}: Next button not found and could not move to the next section.`);
         await wait(350);
         continue;
       }
 
-      if (!nextButtonExists()) throw new Error(`Stopped at question ${qn}: Next button not found.`);
       await clickByText('Next', 5000);
-      await waitForQuestionChange(qn, 7000);
+      const nextQ = await waitForQuestionChange(qn, 7000);
       await wait(250);
+
+      // Normal case: Q22 -> Q23, Q25 -> Q26, etc.
+      if (nextQ && nextQ > qn) continue;
+
+      // Section-end case: Testbook's Next can wrap/reset instead of moving
+      // globally. Recover by clicking the next section tab automatically.
+      const moved = await moveToNextSection(qn);
+      if (!moved) throw new Error(`Reached question ${qn}, but could not move to the next section.`);
+      await wait(350);
     }
 
     all.sort((a, b) => a.questionNumber - b.questionNumber);
