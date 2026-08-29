@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Testbook AI Analyzer",
+  "version": "0.1.0",
+  "description": "Extract Testbook mock-test data into structured JSON for AI analysis.",
+  "permissions": ["activeTab", "scripting", "downloads"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Testbook AI Analyzer"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://testbook.com/*", "https://*.testbook.com/*"],
+      "js": ["extractor.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
