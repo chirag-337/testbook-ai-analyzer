@@ -9,15 +9,18 @@
     h1 { margin: 0 0 4px; font-size: 20px; }
     p { margin: 0 0 14px; color: #596579; }
     button { width: 100%; padding: 10px 12px; margin-top: 8px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
-    #scan { background: #172033; color: white; }
+    #auto { background: #172033; color: white; }
+    #scan { background: #eef2f7; color: #172033; }
     #export, #copy { background: #eef2f7; color: #172033; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
     #status { margin-top: 14px; padding: 10px; background: #f7f8fa; border-radius: 8px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <h1>Testbook AI Analyzer</h1>
-  <p>Extract the current mock-test page locally.</p>
-  <button id="scan">Scan page</button>
+  <p>Analyze the completed Testbook mock automatically.</p>
+  <button id="auto">Analyze full test</button>
+  <button id="scan">Scan current question</button>
   <button id="export" disabled>Export JSON</button>
   <button id="copy" disabled>Copy AI analysis prompt</button>
   <div id="status">Ready.</div>
