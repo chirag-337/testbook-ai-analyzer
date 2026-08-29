@@ -45,7 +45,16 @@ function currentQuestionNumber() {
 
 function solutionVisible() {
   const text = clean(document.body.innerText);
-  return /correct answer is\s*["']?Option\s*\d+/i.test(text) || /Solution\s*$/im.test(text) && /BODMAS|Hence,? the correct answer/i.test(text);
+  if (/correct answer is\s*["']?Option\s*\d+/i.test(text)) return true;
+  if (/BODMAS|Hence,? the correct answer/i.test(text) && /Solution/i.test(text)) return true;
+  if ([...document.querySelectorAll('li[ng-repeat*="option in getOptions"]')]
+    .some(li => visible(li) && /correct-option/.test(String(li.className || '')))) return true;
+  return false;
+}
+
+function viewSolutionButtonExists() {
+  return [...document.querySelectorAll('button, a, [role="button"]')]
+    .some(el => visible(el) && /view\s+solution/i.test(clean(el.innerText || el.textContent)));
 }
 
 function nextButtonExists() {
@@ -63,16 +72,33 @@ async function waitForQuestionChange(oldNumber, timeout = 7000) {
   return currentQuestionNumber();
 }
 
+// Testbook can auto-open a solution. Never fail the entire scan just because
+// the "View Solution" button is absent; if it is already open, extraction can
+// proceed. If the button is absent and no solution is visible, wait briefly
+// and then continue rather than forcing manual intervention.
 async function ensureSolution() {
-  if (solutionVisible()) return;
-  await clickByText('View Solution', 5000);
+  if (solutionVisible()) return true;
+
+  if (viewSolutionButtonExists()) {
+    try {
+      await clickByText('View Solution', 2500);
+    } catch (_) {
+      // The DOM may change between detection and click. Treat this as a
+      // non-fatal condition and re-check below.
+    }
+
+    const started = Date.now();
+    while (!solutionVisible() && Date.now() - started < 5000) await wait(150);
+    return solutionVisible();
+  }
+
+  // No button means Testbook may already have opened/loaded the solution.
+  // Give Angular a moment to finish rendering it, then continue regardless.
   const started = Date.now();
-  while (!solutionVisible() && Date.now() - started < 6000) await wait(150);
+  while (!solutionVisible() && Date.now() - started < 2500) await wait(150);
+  return solutionVisible();
 }
 
-// Testbook's right-side question navigator contains one numeric item per
-// question in the CURRENT section. This lets us detect section boundaries
-// without hard-coding 25 questions per section.
 function currentSectionQuestionCount() {
   const sectionHeading = [...document.querySelectorAll('body *')]
     .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
@@ -89,7 +115,6 @@ function currentSectionQuestionCount() {
     }
   }
 
-  // Fallback: count visible numeric controls on the right side.
   const nums = [...document.querySelectorAll('button, a, [role="button"], div, span')]
     .filter(visible)
     .filter(el => {
@@ -109,8 +134,6 @@ function getSectionTabs() {
     .filter(x => x.r.top >= 120 && x.r.top <= 220 && x.r.left >= 70 && x.r.left < window.innerWidth * 0.65)
     .filter(x => !/^(SECTIONS|English|Hindi|Save|Report|Analytics|Filter)$/i.test(x.text));
 
-  // Prefer the largest clickable element for each visible tab label, then
-  // sort left-to-right. Nested spans/divs otherwise create duplicates.
   const byText = new Map();
   for (const x of candidates) {
     const old = byText.get(x.text);
@@ -127,11 +150,8 @@ async function moveToNextSection(currentNumber) {
   const tabs = getSectionTabs();
   if (tabs.length < 2) throw new Error(`Reached section end at question ${currentNumber}, but could not find the section tabs.`);
 
-  const currentText = clean(document.querySelector('[class*="active"]')?.innerText || '');
   let currentIndex = tabs.findIndex(tab => /active|selected/i.test(String(tab.className || '')));
 
-  // If the active class is on a child, infer the current tab from the
-  // question section heading instead.
   if (currentIndex < 0) {
     const heading = [...document.querySelectorAll('body *')]
       .find(el => visible(el) && /^SECTION\s*:/i.test(clean(el.innerText || el.textContent)) && clean(el.innerText || el.textContent).length < 100);
